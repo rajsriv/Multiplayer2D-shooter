@@ -107,6 +107,19 @@ const GameEngine = () => {
     return () => clearInterval(interval);
   }, [gameState.isDead, gameState.isSpectator, broadcastMove]);
 
+  // Relocate on Respawn
+  const lastDeadRef = useRef(gameState.isDead);
+  useEffect(() => {
+    if (lastDeadRef.current === true && gameState.isDead === false) {
+      // Just respawned
+      const spawn = findSafeSpawn(mapObstacles, canvasSize.w, canvasSize.h);
+      playerRef.current.x = spawn.x;
+      playerRef.current.y = spawn.y;
+      broadcastMove(spawn.x, spawn.y, playerRef.current.angle);
+    }
+    lastDeadRef.current = gameState.isDead;
+  }, [gameState.isDead, mapObstacles, canvasSize.w, canvasSize.h, findSafeSpawn, broadcastMove]);
+
   // Main Game Loop
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -311,13 +324,13 @@ const GameEngine = () => {
 
       // Other Players
       gameState.players.forEach(op => {
-        if (op.id !== localPlayerId) {
+        if (op.id !== localPlayerId && !op.isDead) {
           drawMech(op.x, op.y, op.angle, op.color || '#ef4444', op.name, false, op.team);
         }
       });
 
       // Local Player
-      if (!gameState.isSpectator) {
+      if (!gameState.isSpectator && !gameState.isDead) {
         const me = gameState.players.find(p => p.id === localPlayerId);
         const myColor = me?.color || '#4299e1';
         drawMech(p.x, p.y, p.angle, myColor, gameState.playerName || 'YOU', true, me?.team);

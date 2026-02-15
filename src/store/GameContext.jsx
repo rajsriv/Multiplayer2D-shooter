@@ -44,14 +44,14 @@ export const GameProvider = ({ children }) => {
   }, [gameState]);
 
   const handleDeath = useCallback(() => {
-    setGameState((prev) => ({ ...prev, isDead: true, respawnTime: 10 }));
+    setGameState((prev) => ({ ...prev, isDead: true, respawnTime: 5 }));
   }, []);
 
   const createRoom = useCallback((name) => {
     const code = Math.random().toString(36).substring(2, 8).toUpperCase();
     const expiry = Date.now() + 2 * 60 * 1000;
     const myId = Math.random().toString(36).substring(7);
-    const me = { name, color: randomColor(), id: myId, team: "blue", x: 400, y: 300, angle: 0 };
+    const me = { name, color: randomColor(), id: myId, team: "blue", x: 400, y: 300, angle: 0, isDead: false };
     
     setGameState((prev) => ({
       ...prev,
@@ -70,7 +70,7 @@ export const GameProvider = ({ children }) => {
 
   const joinRoom = useCallback((name, code) => {
     const myId = Math.random().toString(36).substring(7);
-    const me = { name, color: randomColor(), id: myId, team: "red", x: 400, y: 300, angle: 0 };
+    const me = { name, color: randomColor(), id: myId, team: "red", x: 400, y: 300, angle: 0, isDead: false };
     
     setGameState((prev) => ({
       ...prev,
@@ -203,11 +203,20 @@ export const GameProvider = ({ children }) => {
       
       switch (type) {
         case "PLAYER_DIED":
-          if (payload.roomCode === currentState.roomCode && payload.targetId === myId) {
-            handleDeath();
+          if (payload.roomCode === currentState.roomCode) {
+            setGameState(prev => ({
+              ...prev,
+              players: (prev.players || []).map(p => 
+                p.id === payload.targetId ? { ...p, isDead: true } : p
+              )
+            }));
+            if (payload.targetId === myId) {
+              handleDeath();
+            }
           }
           break;
         case "SETTINGS_UPDATE":
+          // ... (existing code)
           if (payload.roomCode === currentState.roomCode) {
             setGameState(prev => ({ 
               ...prev, 
