@@ -1,8 +1,9 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from "react";
+import { io } from "socket.io-client";
 
 const GameContext = createContext();
 
-const SYNC_CHANNEL = "retro_strike_sync";
+const SOCKET_URL = "http://localhost:3001";
 
 const WEAPONS = [
   { name: "Knife", range: 100, killsRequired: 0 },
@@ -35,7 +36,7 @@ export const GameProvider = ({ children }) => {
     allowBots: true,
   });
 
-  const [channel, setChannel] = useState(null);
+  const [socket, setSocket] = useState(null);
   const stateRef = useRef(gameState);
 
   useEffect(() => {
@@ -61,7 +62,11 @@ export const GameProvider = ({ children }) => {
       roomExpiry: expiry,
       players: [me],
     }));
-  }, []);
+
+    if (socket) {
+      socket.emit('join-room', { roomCode: code, playerName: name });
+    }
+  }, [socket]);
 
   const joinRoom = useCallback((name, code) => {
     const myId = Math.random().toString(36).substring(7);
@@ -76,19 +81,20 @@ export const GameProvider = ({ children }) => {
       players: [me], 
     }));
 
-    if (channel) {
-      channel.postMessage({
+    if (socket) {
+      socket.emit('join-room', { roomCode: code, playerName: name });
+      socket.emit('game-event', {
         type: "PLAYER_JOINED",
         payload: { roomCode: code, player: me }
       });
       setTimeout(() => {
-        channel.postMessage({
+        socket.emit('game-event', {
           type: "SYNC_REQUEST",
           payload: { roomCode: code }
         });
       }, 300);
     }
-  }, [channel]);
+  }, [socket]);
 
   const startGame = useCallback(() => {
     const currentState = stateRef.current;
@@ -109,8 +115,8 @@ export const GameProvider = ({ children }) => {
 
     setGameState(prev => ({ ...prev, isStarted: true, mapObstacles: obs }));
     
-    if (channel && currentState.roomCode) {
-      channel.postMessage({
+    if (socket && currentState.roomCode) {
+      socket.emit('game-event', {
         type: "GAME_STARTED",
         payload: { 
           roomCode: currentState.roomCode, 
@@ -119,43 +125,46 @@ export const GameProvider = ({ children }) => {
         }
       });
     }
-  }, [channel]);
+  }, [socket]);
 
   const updateSettings = useCallback((newMode, newBots) => {
     const currentState = stateRef.current;
     if (!currentState) return;
     setGameState(prev => ({ ...prev, gameMode: newMode, allowBots: newBots }));
-    if (channel && currentState.roomCode) {
-      channel.postMessage({
+    if (socket && currentState.roomCode) {
+      socket.emit('game-event', {
         type: "SETTINGS_UPDATE",
         payload: { roomCode: currentState.roomCode, gameMode: newMode, allowBots: newBots }
       });
     }
-  }, [channel]);
+  }, [socket]);
 
   const broadcastMove = useCallback((x, y, angle) => {
     const currentState = stateRef.current;
     if (!currentState) return;
-    if (channel && currentState.roomCode) {
+    if (socket && currentState.roomCode) {
       const me = (currentState.players || []).find(p => p.name === currentState.playerName);
       if (!me) return;
-      channel.postMessage({
-        type: "PLAYER_MOVE",
-        payload: { roomCode: currentState.roomCode, playerId: me.id, x, y, angle }
+      socket.emit('player-move', { 
+        roomCode: currentState.roomCode, 
+        playerId: me.id, 
+        x, 
+        y, 
+        angle 
       });
     }
-  }, [channel]);
+  }, [socket]);
 
   const reportKill = useCallback((targetId) => {
     const currentState = stateRef.current;
     if (!currentState) return;
-    if (channel && currentState.roomCode) {
-      channel.postMessage({
+    if (socket && currentState.roomCode) {
+      socket.emit('game-event', {
         type: "PLAYER_DIED",
         payload: { roomCode: currentState.roomCode, targetId }
       });
     }
-  }, [channel]);
+  }, [socket]);
 
   const addKill = useCallback(() => {
     setGameState(prev => {
@@ -182,12 +191,12 @@ export const GameProvider = ({ children }) => {
   }, []);
 
   useEffect(() => {
-    const bc = new BroadcastChannel(SYNC_CHANNEL);
-    setChannel(bc);
+    const newSocket = io(SOCKET_URL);
+    setSocket(newSocket);
 
-    bc.onmessage = (event) => {
-      if (!event.data) return;
-      const { type, payload } = event.data;
+    newSocket.on('game-event', (event) => {
+      if (!event) return;
+      const { type, payload } = event;
       const currentState = stateRef.current;
       if (!currentState) return;
       const myId = (currentState.players || []).find(p => p.name === currentState.playerName)?.id;
@@ -226,7 +235,7 @@ export const GameProvider = ({ children }) => {
           break;
         case "SYNC_REQUEST":
           if (currentState.isHost && currentState.roomCode && payload.roomCode === currentState.roomCode) {
-            bc.postMessage({
+            newSocket.emit('game-event', {
               type: "SYNC_RESPONSE",
               payload: {
                 roomCode: currentState.roomCode,
@@ -259,17 +268,6 @@ export const GameProvider = ({ children }) => {
             });
           }
           break;
-        case "PLAYER_MOVE":
-          if (currentState.roomCode && payload.roomCode === currentState.roomCode) {
-            if (!payload.playerId) return;
-            setGameState(prev => ({
-              ...prev,
-              players: (prev.players || []).map(p => 
-                p.id === payload.playerId ? { ...p, x: payload.x, y: payload.y, angle: payload.angle } : p
-              )
-            }));
-          }
-          break;
         case "GAME_STARTED":
           if (currentState.roomCode && payload.roomCode === currentState.roomCode) {
             setGameState(prev => ({ 
@@ -283,9 +281,22 @@ export const GameProvider = ({ children }) => {
         default:
           break;
       }
-    };
+    });
 
-    return () => bc.close();
+    newSocket.on('player-move', (payload) => {
+      const currentState = stateRef.current;
+      if (currentState.roomCode && payload.roomCode === currentState.roomCode) {
+        if (!payload.playerId) return;
+        setGameState(prev => ({
+          ...prev,
+          players: (prev.players || []).map(p => 
+            p.id === payload.playerId ? { ...p, x: payload.x, y: payload.y, angle: payload.angle } : p
+          )
+        }));
+      }
+    });
+
+    return () => newSocket.close();
   }, [handleDeath]);
 
   useEffect(() => {
@@ -330,3 +341,4 @@ export const useGame = () => {
   }
   return context;
 };
+
