@@ -4,8 +4,13 @@ import { io } from "socket.io-client";
 const GameContext = createContext();
 
 const getSocketURL = () => {
+  // 1. Check for explicit environment variable (Vercel)
+  if (import.meta.env.VITE_SOCKET_URL) {
+    return import.meta.env.VITE_SOCKET_URL;
+  }
+  
+  // 2. Fallback for local testing / Wi-Fi testing
   const { hostname } = window.location;
-  // If we're accessing via IP or non-localhost hostname, connect to that same host
   if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
     return `http://${hostname}:3001`;
   }
