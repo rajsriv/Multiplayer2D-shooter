@@ -4,15 +4,21 @@ import { useGame } from '../../store/GameContext';
 const GameEngine = () => {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
-  const { gameState, addKill, reportKill, broadcastMove, weapons } = useGame();
+  const { gameState, setGameState, addKill, reportKill, broadcastMove, weapons } = useGame();
   
   // Refs for game state that updates every frame
   const playerRef = useRef({ x: 400, y: 300, angle: 0, speed: 3.5 });
   const bulletsRef = useRef([]);
   const botsRef = useRef([]);
   const keysRef = useRef({});
+  const gameStateRef = useRef(gameState);
   
   const [canvasSize, setCanvasSize] = useState({ w: 800, h: 600 });
+  
+  // Sync gameState to ref
+  useEffect(() => {
+    gameStateRef.current = gameState;
+  }, [gameState]);
   
   // Helper: Find a spawn point not inside an obstacle
   const findSafeSpawn = useCallback((obstacles, w, h) => {
@@ -97,15 +103,15 @@ const GameEngine = () => {
     };
   }, []);
 
-  // Broadcast Movement
   useEffect(() => {
     const interval = setInterval(() => {
-      if (gameState.isDead || gameState.isSpectator) return;
+      const g = gameStateRef.current;
+      if (g.isDead || g.isSpectator) return;
       const p = playerRef.current;
       broadcastMove(p.x, p.y, p.angle);
     }, 50); // Broadcast every 50ms
     return () => clearInterval(interval);
-  }, [gameState.isDead, gameState.isSpectator, broadcastMove]);
+  }, [broadcastMove]);
 
   // Relocate on Respawn
   const lastDeadRef = useRef(gameState.isDead);
@@ -130,8 +136,11 @@ const GameEngine = () => {
     let animationId;
 
     const update = () => {
+      const g = gameStateRef.current;
+      if (!g.isStarted) return;
+
       // 1. Player Movement
-      if (!gameState.isDead && !gameState.isSpectator) {
+      if (!g.isDead && !g.isSpectator) {
         const p = playerRef.current;
         const keys = keysRef.current;
         let dx = 0;
@@ -165,9 +174,7 @@ const GameEngine = () => {
         y: b.y + Math.sin(b.angle) * 10,
         dist: b.dist + 10
       })).filter(b => {
-        // Range check
         if (b.dist >= (weapon?.range || 100)) return false;
-        // Wall check
         const hitWall = mapObstacles.some(obs => 
           b.x > obs.x && b.x < obs.x + obs.w &&
           b.y > obs.y && b.y < obs.y + obs.h
@@ -186,13 +193,12 @@ const GameEngine = () => {
       // 4. Collision Detection
       bulletsRef.current = bulletsRef.current.filter(bullet => {
         let bulletActive = true;
+        const myTeam = g.players.find(p => p.id === localPlayerId)?.team;
         
         // Check Bots
         botsRef.current.forEach(bot => {
           if (bot.alive && bulletActive && Math.hypot(bot.x - bullet.x, bot.y - bullet.y) < 20) {
-            // TDM: Only hit if enemies
-            const myTeam = gameState.players.find(p => p.id === localPlayerId)?.team;
-            if (gameState.gameMode === 'FFA' || (myTeam !== bot.team)) {
+            if (g.gameMode === 'FFA' || (myTeam !== bot.team)) {
               addKill();
               bot.alive = false;
               bulletActive = false;
@@ -202,13 +208,20 @@ const GameEngine = () => {
 
         // Check Other Players
         if (bulletActive) {
-          gameState.players.forEach(op => {
-            if (op.id !== localPlayerId && bulletActive && Math.hypot(op.x - bullet.x, op.y - bullet.y) < 20) {
-               const myTeam = gameState.players.find(p => p.id === localPlayerId)?.team;
-               if (gameState.gameMode === 'FFA' || (myTeam !== op.team)) {
+          g.players.forEach(op => {
+            if (op.id !== localPlayerId && !op.isDead && bulletActive && Math.hypot(op.x - bullet.x, op.y - bullet.y) < 20) {
+               if (g.gameMode === 'FFA' || (myTeam !== op.team)) {
                  addKill();
-                 reportKill(op.id); // Broadcast that this player died
+                 reportKill(op.id);
                  bulletActive = false;
+                 
+                 // INSTANT LOCAL FEEDBACK
+                 setGameState(prev => ({
+                    ...prev,
+                    players: (prev.players || []).map(p => 
+                        p.id === op.id ? { ...p, isDead: true } : p
+                    )
+                 }));
                }
             }
           });
@@ -217,8 +230,7 @@ const GameEngine = () => {
         return bulletActive;
       });
 
-    // 5. Bot Respawn
-      if (gameState.allowBots) {
+      if (g.allowBots) {
         botsRef.current.forEach(bot => {
           if (!bot.alive && Math.random() < 0.005) {
             const spawn = findSafeSpawn(mapObstacles, canvasSize.w, canvasSize.h);
@@ -241,6 +253,7 @@ const GameEngine = () => {
     animationId = requestAnimationFrame(renderLoop);
 
     const draw = (ctx) => {
+      const g = gameStateRef.current;
       ctx.clearRect(0, 0, canvasSize.w, canvasSize.h);
       
       // Draw Grid
@@ -278,10 +291,6 @@ const GameEngine = () => {
       });
 
       const p = playerRef.current;
-      const weapon = weapons[weaponLevelRef.current] || weapons[0];
-      const visionRange = gameState.isSpectator ? 2000 : (weapon?.range || 100);
-      
-      ctx.save();
       
       // Unit Drawing Helper
       const drawMech = (mx, my, ma, color, name, isLocal = false, team = null) => {
@@ -302,7 +311,7 @@ const GameEngine = () => {
         ctx.fillRect(-12, -12, 24, 4);
         
         // Head / Scanner - Team based color
-        if (gameState.gameMode === 'TDM') {
+        if (g.gameMode === 'TDM') {
           ctx.fillStyle = team === 'blue' ? '#3b82f6' : '#ef4444';
         } else {
           ctx.fillStyle = isLocal ? '#3b82f6' : '#ef4444';
@@ -330,17 +339,17 @@ const GameEngine = () => {
       });
 
       // Other Players
-      gameState.players.forEach(op => {
+      g.players.forEach(op => {
         if (op.id !== localPlayerId && !op.isDead) {
           drawMech(op.x, op.y, op.angle, op.color || '#ef4444', op.name, false, op.team);
         }
       });
 
       // Local Player
-      if (!gameState.isSpectator && !gameState.isDead) {
-        const me = gameState.players.find(p => p.id === localPlayerId);
+      if (!g.isSpectator && !g.isDead) {
+        const me = g.players.find(pl => pl.id === localPlayerId);
         const myColor = me?.color || '#4299e1';
-        drawMech(p.x, p.y, p.angle, myColor, gameState.playerName || 'YOU', true, me?.team);
+        drawMech(p.x, p.y, p.angle, myColor, g.playerName || 'YOU', true, me?.team);
         
         // Interaction Circle
         ctx.strokeStyle = me?.team === 'red' ? 'rgba(239, 68, 68, 0.3)' : 'rgba(66, 153, 225, 0.3)';
@@ -348,15 +357,13 @@ const GameEngine = () => {
         ctx.beginPath(); ctx.arc(p.x, p.y, 40, 0, Math.PI * 2); ctx.stroke();
         ctx.setLineDash([]);
       }
-
-      ctx.restore();
     };
 
     return () => {
       cancelAnimationFrame(animationId);
       clearInterval(logicInterval);
     };
-  }, [canvasSize, weapons, mapObstacles, localPlayerId, addKill, gameState.isDead, gameState.isSpectator, gameState.players, reportKill, broadcastMove, findSafeSpawn, gameState.allowBots]);
+  }, [canvasSize, weapons, mapObstacles, localPlayerId, addKill, reportKill, broadcastMove, findSafeSpawn, setGameState]);
 
   const handleMouseMove = useCallback((e) => {
     if (gameState.isDead || gameState.isSpectator || !canvasRef.current) return;
