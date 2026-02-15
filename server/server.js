@@ -21,15 +21,25 @@ io.on('connection', (socket) => {
   console.log(`[CONNECT] Socket ID: ${socket.id}`);
 
   socket.on('join-room', ({ roomCode, playerName, playerInfo }) => {
-    socket.join(roomCode);
-    console.log(`[JOIN] Player "${playerName}" joined room: ${roomCode}`);
+    if (!roomCode) {
+      console.warn(`[WARN] join-room received with no roomCode from ${playerName}`);
+      return;
+    }
     
+    socket.join(roomCode);
+    console.log(`[JOIN] Player "${playerName}" (${socket.id}) joined room: ${roomCode}`);
+    
+    // Check how many people are in the room
+    const clients = io.sockets.adapter.rooms.get(roomCode);
+    const numClients = clients ? clients.size : 0;
+    console.log(`[ROOM] Room ${roomCode} now has ${numClients} participants`);
+
     if (playerInfo) {
       io.in(roomCode).emit('game-event', {
         type: 'PLAYER_JOINED',
         payload: { roomCode, player: playerInfo }
       });
-      console.log(`[BROADCAST] PLAYER_JOINED for "${playerName}" in room ${roomCode}`);
+      console.log(`[BROADCAST] PLAYER_JOINED in room ${roomCode}`);
     }
 
     socket.emit('room-joined-ack', { roomCode });
@@ -38,8 +48,10 @@ io.on('connection', (socket) => {
   socket.on('game-event', (data) => {
     const { type, payload } = data;
     if (payload && payload.roomCode) {
-      console.log(`[EVENT] ${type} in room ${payload.roomCode}`);
+      console.log(`[EVENT] ${type} in room ${payload.roomCode} from ${socket.id}`);
       io.in(payload.roomCode).emit('game-event', data);
+    } else {
+      console.warn(`[WARN] game-event ${type} received with no roomCode:`, data);
     }
   });
 
@@ -54,7 +66,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// Helper to get local IP addresses
 const getLocalIPs = () => {
   const nets = os.networkInterfaces();
   const results = [];

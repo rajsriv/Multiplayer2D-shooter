@@ -214,6 +214,20 @@ export const GameProvider = ({ children }) => {
 
     newSocket.on('connect', () => {
       console.log(`[SOCKET] Connected: ${newSocket.id}`);
+      // Auto-rejoin room if we have a roomCode
+      const currentState = stateRef.current;
+      if (currentState.roomCode && currentState.playerName) {
+        console.log(`[SOCKET] Rejoining room: ${currentState.roomCode}`);
+        newSocket.emit('join-room', { 
+          roomCode: currentState.roomCode, 
+          playerName: currentState.playerName,
+          playerInfo: currentState.players.find(p => p.name === currentState.playerName)
+        });
+      }
+    });
+
+    newSocket.on('connect_error', (err) => {
+      console.error(`[SOCKET] Connection Error:`, err);
     });
 
     newSocket.on('game-event', (event) => {
