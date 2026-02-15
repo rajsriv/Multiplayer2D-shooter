@@ -3,7 +3,16 @@ import { io } from "socket.io-client";
 
 const GameContext = createContext();
 
-const SOCKET_URL = "http://localhost:3001";
+const getSocketURL = () => {
+  const { hostname } = window.location;
+  // If we're accessing via IP or non-localhost hostname, connect to that same host
+  if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
+    return `http://${hostname}:3001`;
+  }
+  return "http://localhost:3001";
+};
+
+const SOCKET_URL = getSocketURL();
 
 const WEAPONS = [
   { name: "Knife", range: 100, killsRequired: 0 },
@@ -88,14 +97,14 @@ export const GameProvider = ({ children }) => {
     if (socket) {
       socket.emit('join-room', { roomCode: code, playerName: name, playerInfo: me });
       
-      // Wait a bit for the host to process the join broadcast from server
+      // Wait a bit for the host to process the join broadcast
       setTimeout(() => {
         console.log(`[SYNC] Requesting sync for room: ${code}`);
         socket.emit('game-event', {
           type: "SYNC_REQUEST",
           payload: { roomCode: code }
         });
-      }, 500);
+      }, 1000);
     }
   }, [socket]);
 
