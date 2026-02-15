@@ -51,8 +51,10 @@ export const GameProvider = ({ children }) => {
     const code = Math.random().toString(36).substring(2, 8).toUpperCase();
     const expiry = Date.now() + 2 * 60 * 1000;
     const myId = Math.random().toString(36).substring(7);
-    const me = { name, color: randomColor(), id: myId, team: "blue", x: 400, y: 300, angle: 0, isDead: false };
+    const me = { name, color: randomColor(), id: myId, team: "blue", x: 400, y: 300, angle: 0, isDead: false, isHost: true };
     
+    console.log(`[CREATE] Room: ${code} for player: ${name}`);
+
     setGameState((prev) => ({
       ...prev,
       playerName: name,
@@ -64,14 +66,16 @@ export const GameProvider = ({ children }) => {
     }));
 
     if (socket) {
-      socket.emit('join-room', { roomCode: code, playerName: name });
+      socket.emit('join-room', { roomCode: code, playerName: name, playerInfo: me });
     }
   }, [socket]);
 
   const joinRoom = useCallback((name, code) => {
     const myId = Math.random().toString(36).substring(7);
-    const me = { name, color: randomColor(), id: myId, team: "red", x: 400, y: 300, angle: 0, isDead: false };
+    const me = { name, color: randomColor(), id: myId, team: "red", x: 400, y: 300, angle: 0, isDead: false, isHost: false };
     
+    console.log(`[JOIN] Room: ${code} for player: ${name}`);
+
     setGameState((prev) => ({
       ...prev,
       playerName: name,
@@ -82,35 +86,37 @@ export const GameProvider = ({ children }) => {
     }));
 
     if (socket) {
-      socket.emit('join-room', { roomCode: code, playerName: name });
-      socket.emit('game-event', {
-        type: "PLAYER_JOINED",
-        payload: { roomCode: code, player: me }
-      });
+      socket.emit('join-room', { roomCode: code, playerName: name, playerInfo: me });
+      
+      // Wait a bit for the host to process the join broadcast from server
       setTimeout(() => {
+        console.log(`[SYNC] Requesting sync for room: ${code}`);
         socket.emit('game-event', {
           type: "SYNC_REQUEST",
           payload: { roomCode: code }
         });
-      }, 300);
+      }, 500);
     }
   }, [socket]);
 
   const startGame = useCallback(() => {
     const currentState = stateRef.current;
-    if (!currentState) return;
+    if (!currentState || !currentState.isHost) return;
+    
+    console.log(`[START] Game in room: ${currentState.roomCode}`);
+
     const obs = [];
     const count = 6 + Math.floor(Math.random() * 4);
     const wLimit = 800;
     const hLimit = 600;
     for (let i = 0; i < count; i++) {
-      const w = 40 + Math.random() * 100;
-      const h = 40 + Math.random() * 100;
-      const x = Math.random() * (wLimit - w);
-      const y = Math.random() * (hLimit - h);
-      if (Math.hypot(x + w / 2 - wLimit / 2, y + h / 2 - hLimit / 2) > 100) {
-        obs.push({ x, y, w, h });
-      }
+        const w = 40 + Math.random() * 100;
+        const h = 40 + Math.random() * 100;
+        const x = Math.random() * (wLimit - w);
+        const y = Math.random() * (hLimit - h);
+        if (Math.hypot(x + w / 2 - wLimit / 2, y + h / 2 - hLimit / 2) > 100) {
+            obs.push({ x, y, w, h });
+        }
     }
 
     setGameState(prev => ({ ...prev, isStarted: true, mapObstacles: obs }));
@@ -129,7 +135,8 @@ export const GameProvider = ({ children }) => {
 
   const updateSettings = useCallback((newMode, newBots) => {
     const currentState = stateRef.current;
-    if (!currentState) return;
+    if (!currentState || !currentState.isHost) return;
+    
     setGameState(prev => ({ ...prev, gameMode: newMode, allowBots: newBots }));
     if (socket && currentState.roomCode) {
       socket.emit('game-event', {
@@ -141,7 +148,8 @@ export const GameProvider = ({ children }) => {
 
   const broadcastMove = useCallback((x, y, angle) => {
     const currentState = stateRef.current;
-    if (!currentState) return;
+    if (!currentState || !currentState.isStarted || currentState.isDead) return;
+    
     if (socket && currentState.roomCode) {
       const me = (currentState.players || []).find(p => p.name === currentState.playerName);
       if (!me) return;
@@ -157,8 +165,9 @@ export const GameProvider = ({ children }) => {
 
   const reportKill = useCallback((targetId) => {
     const currentState = stateRef.current;
-    if (!currentState) return;
-    if (socket && currentState.roomCode) {
+    if (!currentState || !currentState.roomCode) return;
+    
+    if (socket) {
       socket.emit('game-event', {
         type: "PLAYER_DIED",
         payload: { roomCode: currentState.roomCode, targetId }
@@ -194,56 +203,58 @@ export const GameProvider = ({ children }) => {
     const newSocket = io(SOCKET_URL);
     setSocket(newSocket);
 
+    newSocket.on('connect', () => {
+      console.log(`[SOCKET] Connected: ${newSocket.id}`);
+    });
+
     newSocket.on('game-event', (event) => {
       if (!event) return;
       const { type, payload } = event;
       const currentState = stateRef.current;
-      if (!currentState) return;
+      
+      // In a real app, we'd check roomCode, but since the server handles room isolation
+      // and React state is async, we allow events through to avoid stale state issues.
+      // console.log(`[RECV] Event: ${type}`, payload);
+
       const myId = (currentState.players || []).find(p => p.name === currentState.playerName)?.id;
       
       switch (type) {
         case "PLAYER_DIED":
-          if (payload.roomCode === currentState.roomCode) {
-            setGameState(prev => ({
-              ...prev,
-              players: (prev.players || []).map(p => 
-                p.id === payload.targetId ? { ...p, isDead: true } : p
-              )
-            }));
-            if (payload.targetId === myId) {
-              handleDeath();
-            }
+          setGameState(prev => ({
+            ...prev,
+            players: (prev.players || []).map(p => 
+              p.id === payload.targetId ? { ...p, isDead: true } : p
+            )
+          }));
+          if (payload.targetId === myId) {
+            handleDeath();
           }
           break;
         case "SETTINGS_UPDATE":
-          // ... (existing code)
-          if (payload.roomCode === currentState.roomCode) {
-            setGameState(prev => ({ 
-              ...prev, 
-              gameMode: payload.gameMode, 
-              allowBots: payload.allowBots 
-            }));
-          }
+          setGameState(prev => ({ 
+            ...prev, 
+            gameMode: payload.gameMode, 
+            allowBots: payload.allowBots 
+          }));
           break;
         case "PLAYER_JOINED":
-          if (payload.roomCode === currentState.roomCode) {
-            setGameState(prev => {
-              if ((prev.players || []).find(p => p.id === payload.player.id)) return prev;
-              const newPlayer = { ...payload.player };
-              const newPlayers = [...prev.players, newPlayer];
-              if (prev.gameMode === "TDM") {
-                const blueCount = newPlayers.filter(p => p.team === "blue").length;
-                const redCount = newPlayers.filter(p => p.team === "red").length;
-                const assignedTeam = blueCount <= redCount ? "blue" : "red";
-                newPlayer.team = assignedTeam;
-                newPlayer.color = assignedTeam === 'blue' ? '#3b82f6' : '#ef4444';
-              }
-              return { ...prev, players: newPlayers };
-            });
-          }
+          setGameState(prev => {
+            if ((prev.players || []).find(p => p.id === payload.player.id)) return prev;
+            const newPlayer = { ...payload.player };
+            const newPlayers = [...prev.players, newPlayer];
+            if (prev.gameMode === "TDM") {
+              const blueCount = newPlayers.filter(p => p.team === "blue").length;
+              const redCount = newPlayers.filter(p => p.team === "red").length;
+              const assignedTeam = blueCount <= redCount ? "blue" : "red";
+              newPlayer.team = assignedTeam;
+              newPlayer.color = assignedTeam === 'blue' ? '#3b82f6' : '#ef4444';
+            }
+            return { ...prev, players: newPlayers };
+          });
           break;
         case "SYNC_REQUEST":
-          if (currentState.isHost && currentState.roomCode && payload.roomCode === currentState.roomCode) {
+          if (currentState.isHost) {
+            console.log(`[HOST] Sending sync response to joining player`);
             newSocket.emit('game-event', {
               type: "SYNC_RESPONSE",
               payload: {
@@ -258,34 +269,31 @@ export const GameProvider = ({ children }) => {
           }
           break;
         case "SYNC_RESPONSE":
-          if (currentState.roomCode && payload.roomCode === currentState.roomCode) {
-            setGameState(prev => {
-              if (prev.isHost) return prev;
-              const innerMyId = (prev.players || []).find(p => p.name === prev.playerName)?.id;
-              const me = (prev.players || []).find(p => p.id === innerMyId);
-              const incomingPlayers = payload.players || [];
-              const otherPlayers = incomingPlayers.filter(p => p.id !== innerMyId);
-              return {
-                ...prev,
-                players: me ? [me, ...otherPlayers] : incomingPlayers,
-                isStarted: payload.isStarted,
-                gameMode: payload.gameMode,
-                mapObstacles: payload.mapObstacles || prev.mapObstacles,
-                isSpectator: payload.isStarted,
-                allowBots: payload.allowBots
-              };
-            });
-          }
+          console.log(`[JOINER] Received sync response from host`);
+          setGameState(prev => {
+            if (prev.isHost) return prev;
+            const innerMyId = (prev.players || []).find(p => p.name === prev.playerName)?.id;
+            const me = (prev.players || []).find(p => p.id === innerMyId);
+            const incomingPlayers = payload.players || [];
+            const otherPlayers = incomingPlayers.filter(p => p.id !== innerMyId);
+            return {
+              ...prev,
+              players: me ? [me, ...otherPlayers] : incomingPlayers,
+              isStarted: payload.isStarted,
+              gameMode: payload.gameMode,
+              mapObstacles: payload.mapObstacles || prev.mapObstacles,
+              isSpectator: payload.isStarted,
+              allowBots: payload.allowBots
+            };
+          });
           break;
         case "GAME_STARTED":
-          if (currentState.roomCode && payload.roomCode === currentState.roomCode) {
-            setGameState(prev => ({ 
-              ...prev, 
-              isStarted: true,
-              mapObstacles: payload.mapObstacles || prev.mapObstacles,
-              allowBots: payload.allowBots ?? prev.allowBots
-            }));
-          }
+          setGameState(prev => ({ 
+            ...prev, 
+            isStarted: true,
+            mapObstacles: payload.mapObstacles || prev.mapObstacles,
+            allowBots: payload.allowBots ?? prev.allowBots
+          }));
           break;
         default:
           break;
@@ -293,16 +301,17 @@ export const GameProvider = ({ children }) => {
     });
 
     newSocket.on('player-move', (payload) => {
-      const currentState = stateRef.current;
-      if (currentState.roomCode && payload.roomCode === currentState.roomCode) {
-        if (!payload.playerId) return;
-        setGameState(prev => ({
+      if (!payload.playerId) return;
+      setGameState(prev => ({
           ...prev,
           players: (prev.players || []).map(p => 
             p.id === payload.playerId ? { ...p, x: payload.x, y: payload.y, angle: payload.angle } : p
           )
         }));
-      }
+    });
+
+    newSocket.on('disconnect', () => {
+      console.log("[SOCKET] Disconnected");
     });
 
     return () => newSocket.close();
@@ -350,4 +359,3 @@ export const useGame = () => {
   }
   return context;
 };
-
