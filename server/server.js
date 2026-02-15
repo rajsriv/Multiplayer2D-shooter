@@ -23,29 +23,30 @@ io.on('connection', (socket) => {
     socket.join(roomCode);
     console.log(`[JOIN] Player "${playerName}" joined room: ${roomCode}`);
     
-    // Broadcast to others in the room that a player joined
     if (playerInfo) {
-      socket.to(roomCode).emit('game-event', {
+      // Use io.in to send to EVERYONE in the room including the sender
+      io.in(roomCode).emit('game-event', {
         type: 'PLAYER_JOINED',
         payload: { roomCode, player: playerInfo }
       });
       console.log(`[BROADCAST] PLAYER_JOINED for "${playerName}" in room ${roomCode}`);
     }
 
-    // Acknowledge the join back to the client
     socket.emit('room-joined-ack', { roomCode });
   });
 
   socket.on('game-event', (data) => {
     const { type, payload } = data;
     if (payload && payload.roomCode) {
-      console.log(`[EVENT] ${type} from ${socket.id} to room ${payload.roomCode}`);
-      socket.to(payload.roomCode).emit('game-event', data);
+      console.log(`[EVENT] ${type} in room ${payload.roomCode}`);
+      // Use io.in to send to EVERYONE in the room
+      io.in(payload.roomCode).emit('game-event', data);
     }
   });
 
   socket.on('player-move', (data) => {
     if (data.roomCode) {
+      // Moves still use to().emit (exclude sender) for performance
       socket.to(data.roomCode).emit('player-move', data);
     }
   });

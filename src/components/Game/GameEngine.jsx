@@ -217,7 +217,7 @@ const GameEngine = () => {
         return bulletActive;
       });
 
-      // 5. Bot Respawn
+    // 5. Bot Respawn
       if (gameState.allowBots) {
         botsRef.current.forEach(bot => {
           if (!bot.alive && Math.random() < 0.005) {
@@ -228,10 +228,17 @@ const GameEngine = () => {
           }
         });
       }
-
-      draw(ctx);
-      animationId = requestAnimationFrame(update);
     };
+
+    // Use setInterval for logic to keep it running in background tabs
+    const logicInterval = setInterval(update, 1000 / 60);
+
+    // Use requestAnimationFrame for rendering
+    const renderLoop = () => {
+      draw(ctx);
+      animationId = requestAnimationFrame(renderLoop);
+    };
+    animationId = requestAnimationFrame(renderLoop);
 
     const draw = (ctx) => {
       ctx.clearRect(0, 0, canvasSize.w, canvasSize.h);
@@ -345,9 +352,11 @@ const GameEngine = () => {
       ctx.restore();
     };
 
-    update();
-    return () => cancelAnimationFrame(animationId);
-  }, [canvasSize, weapons, mapObstacles, localPlayerId, addKill, gameState.isDead, gameState.isSpectator, gameState.players]);
+    return () => {
+      cancelAnimationFrame(animationId);
+      clearInterval(logicInterval);
+    };
+  }, [canvasSize, weapons, mapObstacles, localPlayerId, addKill, gameState.isDead, gameState.isSpectator, gameState.players, reportKill, broadcastMove, findSafeSpawn, gameState.allowBots]);
 
   const handleMouseMove = useCallback((e) => {
     if (gameState.isDead || gameState.isSpectator || !canvasRef.current) return;

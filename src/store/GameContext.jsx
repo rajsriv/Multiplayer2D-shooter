@@ -287,7 +287,18 @@ export const GameProvider = ({ children }) => {
             };
           });
           break;
+        case "PLAYER_RESPAWNED":
+          if (payload.roomCode === currentState.roomCode) {
+            setGameState(prev => ({
+              ...prev,
+              players: (prev.players || []).map(p => 
+                p.id === payload.playerId ? { ...p, isDead: false } : p
+              )
+            }));
+          }
+          break;
         case "GAME_STARTED":
+          // ... (existing)
           setGameState(prev => ({ 
             ...prev, 
             isStarted: true,
@@ -321,15 +332,32 @@ export const GameProvider = ({ children }) => {
     let timer;
     if (gameState.isDead && gameState.respawnTime > 0) {
       timer = setInterval(() => {
-        setGameState((prev) => ({
-          ...prev,
-          respawnTime: Math.max(0, prev.respawnTime - 1),
-          isDead: prev.respawnTime > 1,
-        }));
+        setGameState((prev) => {
+          const newTime = Math.max(0, prev.respawnTime - 1);
+          const nowAlive = newTime === 0;
+          
+          if (nowAlive && socket && prev.roomCode) {
+            const myId = (prev.players || []).find(p => p.name === prev.playerName)?.id;
+            socket.emit('game-event', {
+              type: "PLAYER_RESPAWNED",
+              payload: { roomCode: prev.roomCode, playerId: myId }
+            });
+          }
+
+          return {
+            ...prev,
+            respawnTime: newTime,
+            isDead: newTime > 0,
+            // Also update local entry in players list immediately
+            players: (prev.players || []).map(p => 
+              p.name === prev.playerName ? { ...p, isDead: newTime > 0 } : p
+            )
+          };
+        });
       }, 1000);
     }
     return () => clearInterval(timer);
-  }, [gameState.isDead, gameState.respawnTime]);
+  }, [gameState.isDead, gameState.respawnTime, socket]);
 
   return (
     <GameContext.Provider
